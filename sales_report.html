@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Sales Report</h2>
+<form class="row g-3 mb-3" method="get">
+    <div class="col-auto"><input type="date" name="start_date" value="{{ start_date }}" class="form-control"></div>
+    <div class="col-auto"><input type="date" name="end_date" value="{{ end_date }}" class="form-control"></div>
+    <div class="col-auto"><button class="btn btn-primary" type="submit">Filter</button></div>
+</form>
+
+<div class="row">
+    <div class="col-md-4"><strong>Total Revenue:</strong> KES {{ "%.2f"|format(total_revenue) }}</div>
+    <div class="col-md-4"><strong>Items Sold:</strong> {{ total_items_sold }}</div>
+</div>
+
+<h5 class="mt-4">Top Products</h5>
+<ul>
+    {% for p in top_products %}
+        <li>{{ p.name }} – {{ p.total_qty }} units</li>
+    {% endfor %}
+</ul>
+
+<h5 class="mt-4">Transactions</h5>
+<table class="table table-striped">
+    <thead><tr><th>Invoice</th><th>Date</th><th>Total</th><th>Payment</th></tr></thead>
+    <tbody>
+        {% for sale in sales %}
+            <tr>
+                <td>{{ sale.invoice_no }}</td>
+                <td>{{ sale.sale_date.strftime('%d/%m/%Y %H:%M') }}</td>
+                <td>KES {{ "%.2f"|format(sale.final_total) }}</td>
+                <td>{{ sale.payment_method }}</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

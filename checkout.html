@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flask Checkout</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+
+                <div class="card shadow">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">Checkout</h4>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST" action="{{ url_for('checkout') }}" id="checkout-form">
+                            <!-- This is the MAGIC LINE that prevents the error -->
+                            {{ form.csrf_token }}
+
+                            <div class="mb-3">
+                                <label for="product" class="form-label">Product</label>
+                                <input type="text" class="form-control" id="product" name="product" value="Flask Masterclass" readonly>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="quantity" class="form-label">Quantity</label>
+                                {{ form.quantity(class="form-control", placeholder="Enter quantity") }}
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="email" class="form-label">Email address</label>
+                                {{ form.email(class="form-control", placeholder="you@example.com") }}
+                            </div>
+
+                            <button type="submit" class="btn btn-success w-100">
+                                <i class="bi bi-lock"></i> Pay Now
+                            </button>
+                        </form>
+
+                        <hr>
+
+                        <!-- ============================================= -->
+                        <!--  ALTERNATIVE: AJAX / FETCH EXAMPLE           -->
+                        <!--  (Uses the meta tag defined in <head>)       -->
+                        <!-- ============================================= -->
+                        <button id="ajax-pay-btn" class="btn btn-outline-primary w-100">
+                            Try AJAX Payment (Fetch)
+                        </button>
+                        <div id="ajax-result" class="mt-2 text-center"></div>
+
+                    </div>
+                </div>
+
+                <p class="text-muted text-center mt-3">
+                    CSRF token is automatically injected by Flask‑WTF.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS (optional, for toggles etc.) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // ----------------------------------------------------------------
+        //  EXAMPLE: AJAX / FETCH request with CSRF token
+        //  Reads the token from the <meta> tag and sends it in the header.
+        // ----------------------------------------------------------------
+        document.getElementById('ajax-pay-btn').addEventListener('click', function() {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+            fetch("{{ url_for('checkout') }}", {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrfToken,          // <-- REQUIRED for AJAX
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    product: 'Flask AJAX Course',
+                    quantity: 1,
+                    email: 'ajax@example.com'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('ajax-result').innerHTML =
+                    `<div class="alert alert-success">${data.message || 'Success!'}</div>`;
+            })
+            .catch(error => {
+                document.getElementById('ajax-result').innerHTML =
+                    `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+    </script>
+</body>
+</html>
