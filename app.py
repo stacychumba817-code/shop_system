@@ -1,186 +1,197 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session
-from flask_wtf import FlaskForm
-from wtforms import StringField, FloatField, IntegerField, HiddenField
-from wtforms.validators import DataRequired, NumberRange
-import datetime
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from forms import ProductForm, AddToCartForm
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timedelta
+import random
+import string
+
+from config import Config
+from models import db, User, Product, Sale, SaleItem
 
 app = Flask(__name__)
-app.secret_key = 'change-this-secret-key-in-production'
+app.config.from_object(Config)
 
-SHOP_NAME = "CRYSTAL GENERAL SHOP"
-
-
-# --- Auto-inject SHOP_NAME into every HTML template ---
-@app.context_processor
-def inject_shop_name():
-    return dict(SHOP_NAME=SHOP_NAME)
+db.init_app(app)
 
 
-inventory = {
-    "A": {"name": "rice", "price": 120.00, "category": "grain", "quantity": 55, "active": True},
-    "B": {"name": "sugar", "price": 160.00, "category": "food", "quantity": 31, "active": True},
-    "C": {"name": "beans", "price": 150.00, "category": "cereal", "quantity": 50, "active": True},
-    "D": {"name": "bread", "price": 120.00, "category": "whole foods", "quantity": 30, "active": True},
-    "E": {"name": "bar soap", "price": 180.00, "category": "cleaning product", "quantity": 15, "active": True},
-}
-
-sales_history = []
+def generate_invoice_no():
+    return 'INV-' + ''.join(random.choices(string.digits, k=8))
 
 
-# --- WTForms ---
-class AddProductForm(FlaskForm):
-    code = StringField('Product Code', validators=[DataRequired()])
-    name = StringField('Product Name', validators=[DataRequired()])
-    price = FloatField('Price (KES)', validators=[DataRequired()])
-    category = StringField('Category', validators=[DataRequired()])
-    quantity = IntegerField('Quantity', validators=[DataRequired(), NumberRange(min=1)])
-
-
-class AddToCartForm(FlaskForm):
-    code = HiddenField('Code', validators=[DataRequired()])
-    quantity = IntegerField('Qty', validators=[DataRequired(), NumberRange(min=1)])
-
-
-# --- Discount logic (bulk + loyalty) ---
-def calculate_discounts(cart):
-    """
-    Returns (subtotal, discount_pct, discount_amount, final_total, reasons)
-    """
-    subtotal = 0.0
-    total_items = 0
-
-    for code, item in cart.items():
-        subtotal += item['price'] * item['quantity']
-        total_items += item['quantity']
-
+def calculate_discounts(cart_items):
+    subtotal = sum(item['price'] * item['quantity'] for item in cart_items)
+    total_items = sum(item['quantity'] for item in cart_items)
     discount_pct = 0.0
     reasons = []
-
-    # Bulk discount: 5% if 10 or more items
     if total_items >= 10:
         discount_pct += 5.0
         reasons.append("Bulk Purchase (10+ items)")
-
-    # Loyalty discount: 5% if loyalty card is active
-    if session.get('loyalty', False):
         discount_pct += 5.0
         reasons.append("Loyalty Card")
-
     discount_amount = subtotal * (discount_pct / 100)
     final_total = subtotal - discount_amount
-
     return subtotal, discount_pct, discount_amount, final_total, reasons
+
+
+@app.context_processor
+def inject_shop_name():
+    return dict(SHOP_NAME=Config.SHOP_NAME)
 
 
 @app.route('/')
 def index():
     query = request.args.get('q', '').strip()
     threshold = 10
-    products = []
-    low_stock_products = []
-    form = AddToCartForm()
-
-    if query.lower() == 'low':
-        low_stock_products = [(k, v) for k, v in inventory.items() if v['active'] and v['quantity'] <= threshold]
-        products = [(k, v) for k, v in inventory.items() if v['active']]
-    elif query:
-        q = query.lower()
-        for code, details in inventory.items():
-            if details['active']:
-                if q in code.lower() or q in details['name'].lower() or q in details['category'].lower():
-                    products.append((code, details))
+    products = Product.query.filter_by(active=True)
+    low_stock = Product.query.filter(Product.active == True, Product.quantity <= threshold).all()
+    if query:
+        if query.lower() == 'low':
+            products = products.filter(Product.quantity <= threshold)
+        else:
+            q = f"%{query}%"
+            products = products.filter(
+                db.or_(Product.code.ilike(q), Product.name.ilike(q), Product.category.ilike(q))
+            )
     else:
-        products = [(k, v) for k, v in inventory.items() if v['active']]
-
-    return render_template('index.html', products=products, low_stock_products=low_stock_products,
+        products = products.all()
+    form = AddToCartForm()
+    return render_template('index.html', products=products, low_stock=low_stock,
                            form=form, search_query=query, threshold=threshold)
+
+
+@app.route('/dashboard')
+def dashboard():
+    today = datetime.utcnow().date()
+    today_start = datetime(today.year, today.month, today.day)
+    sales_today = Sale.query.filter(Sale.sale_date >= today_start).all()
+    total_sales_today = sum(s.final_total for s in sales_today)
+
+    items_sold_today = db.session.query(db.func.sum(SaleItem.quantity)). \
+                           join(Sale, Sale.id == SaleItem.sale_id). \
+                           filter(Sale.sale_date >= today_start).scalar() or 0
+
+    last_7_days = []
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        start = datetime(day.year, day.month, day.day)
+        end = start + timedelta(days=1)
+        daily_total = db.session.query(db.func.sum(Sale.final_total)).filter(
+            Sale.sale_date >= start, Sale.sale_date < end
+        ).scalar() or 0
+        last_7_days.append({'date': day.strftime('%Y-%m-%d'), 'total': daily_total})
+
+    low_stock_count = Product.query.filter(Product.active == True, Product.quantity <= 5).count()
+    total_products = Product.query.filter_by(active=True).count()
+
+    return render_template('dashboard.html',
+                           total_sales_today=total_sales_today,
+                           items_sold_today=items_sold_today,
+                           sales_7_days=last_7_days,
+                           low_stock_count=low_stock_count,
+                           total_products=total_products)
+
+
+@app.route('/inventory')
+def inventory():
+    products = Product.query.filter_by(active=True).all()
+    return render_template('inventory.html', products=products)
 
 
 @app.route('/add_product', methods=['GET', 'POST'])
 def add_product():
-    form = AddProductForm()
+    form = ProductForm()
     if form.validate_on_submit():
-        code = form.code.data.upper().strip()
-        name = form.name.data.strip()
-        price = form.price.data
-        category = form.category.data.strip()
-        quantity = form.quantity.data
-
-        if code in inventory:
-            if not inventory[code]["active"]:
-                # Reactivate and restock
-                inventory[code]["active"] = True
-                inventory[code]["quantity"] = quantity
-                inventory[code]["name"] = name
-                inventory[code]["price"] = price
-                inventory[code]["category"] = category
-                flash(f'Product {code} reactivated and restocked.', 'success')
+        existing = Product.query.filter_by(code=form.code.data.upper()).first()
+        if existing:
+            if not existing.active:
+                existing.active = True
+                existing.quantity = form.quantity.data
+                existing.name = form.name.data
+                existing.price = form.price.data
+                existing.category = form.category.data
+                db.session.commit()
+                flash(f'Product {existing.code} reactivated.', 'success')
             else:
-                inventory[code]["quantity"] += quantity
-                flash(f'Stock for {code} increased by {quantity}.', 'info')
+                existing.quantity += form.quantity.data
+                db.session.commit()
+                flash(f'Stock for {existing.code} increased by {form.quantity.data}.', 'info')
         else:
-            inventory[code] = {
-                "name": name,
-                "price": price,
-                "category": category,
-                "quantity": quantity,
-                "active": True
-            }
-            flash(f'Product {code} added successfully.', 'success')
-        return redirect(url_for('index'))
+            product = Product(
+                code=form.code.data.upper(),
+                name=form.name.data,
+                price=form.price.data,
+                category=form.category.data,
+                quantity=form.quantity.data,
+                active=True
+            )
+            db.session.add(product)
+            db.session.commit()
+            flash('Product added successfully.', 'success')
+        return redirect(url_for('inventory'))
     return render_template('add_product.html', form=form)
 
 
-@app.route('/remove_product/<code>', methods=['POST'])
-def remove_product(code):
-    if code in inventory and inventory[code]["active"]:
-        inventory[code]["active"] = False
-        flash(f'Product {code} removed (hidden).', 'warning')
-    else:
-        flash('Product already removed or not found.', 'info')
-    return redirect(url_for('index'))
+@app.route('/edit_product/<int:id>', methods=['GET', 'POST'])
+def edit_product(id):
+    product = Product.query.get_or_404(id)
+    form = ProductForm(obj=product)
+    if form.validate_on_submit():
+        product.code = form.code.data.upper()
+        product.name = form.name.data
+        product.price = form.price.data
+        product.category = form.category.data
+        product.quantity = form.quantity.data
+        db.session.commit()
+        flash('Product updated successfully.', 'success')
+        return redirect(url_for('inventory'))
+    return render_template('edit_product.html', form=form, product=product)
 
+
+@app.route('/delete_product/<int:id>', methods=['POST'])
+def delete_product(id):
+    product = Product.query.get_or_404(id)
+    product.active = False
+    db.session.commit()
+    flash(f'Product {product.code} hidden.', 'warning')
+    return redirect(url_for('inventory'))
 
 @app.route('/add_to_cart', methods=['POST'])
 def add_to_cart():
     code = request.form['code'].upper().strip()
-    product = inventory.get(code)
-
-    if not product or not product['active']:
+    product = Product.query.filter_by(code=code, active=True).first()
+    if not product:
         flash('Product not found or inactive.', 'danger')
         return redirect(url_for('index'))
-
     try:
         qty = int(request.form['quantity'])
     except ValueError:
         flash('Invalid quantity.', 'danger')
         return redirect(url_for('index'))
-
     if qty <= 0:
         flash('Quantity must be positive.', 'danger')
         return redirect(url_for('index'))
 
     cart = session.get('cart', {})
     reserved = cart.get(code, {}).get('quantity', 0)
-    available_stock = product['quantity'] - reserved
-
-    if available_stock < qty:
-        flash(f'Not enough stock. Only {available_stock} available.', 'danger')
+    available = product.quantity - reserved
+    if available < qty:
+        flash(f'Not enough stock. Only {available} available.', 'danger')
         return redirect(url_for('index'))
 
     if code in cart:
         cart[code]['quantity'] += qty
     else:
         cart[code] = {
-            'name': product['name'],
-            'price': product['price'],
-            'quantity': qty
+            'name': product.name,
+            'price': product.price,
+            'quantity': qty,
+            'product_id': product.id
         }
-
     session['cart'] = cart
     session.modified = True
-    flash(f'Added {qty} x {product["name"]} to cart.', 'success')
+    flash(f'Added {qty} x {product.name} to cart.', 'success')
     return redirect(url_for('index'))
+
 
 @app.route('/remove_from_cart/<code>', methods=['POST'])
 def remove_from_cart(code):
@@ -190,35 +201,24 @@ def remove_from_cart(code):
         session['cart'] = cart
         session.modified = True
         flash(f'Removed {code} from cart.', 'info')
-    else:
-        flash('Item not found in cart.', 'warning')
     return redirect(url_for('view_cart'))
+
 
 @app.route('/cart')
 def view_cart():
     cart = session.get('cart', {})
     if not cart:
-        return render_template('cart.html', cart={}, total=0, discount_pct=0,
-                               discount_amount=0, discounted_total=0, reasons=[])
-
-    subtotal, discount_pct, discount_amount, final_total, reasons = calculate_discounts(cart)
+        return render_template('cart.html', cart={}, subtotal=0, discount_pct=0,
+                               discount_amount=0, final_total=0, reasons=[])
+    cart_items = list(cart.values())
+    subtotal, discount_pct, discount_amount, final_total, reasons = calculate_discounts(cart_items)
     return render_template('cart.html',
                            cart=cart,
                            subtotal=subtotal,
                            discount_pct=discount_pct,
                            discount_amount=discount_amount,
-                           discounted_total=final_total,
-                           reasons=reasons,
-                           loyalty=session.get('loyalty', False))
-
-
-@app.route('/toggle_loyalty', methods=['POST'])
-def toggle_loyalty():
-    current = session.get('loyalty', False)
-    session['loyalty'] = not current
-    status = "activated" if session['loyalty'] else "deactivated"
-    flash(f'Loyalty card {status}.', 'info')
-    return redirect(url_for('view_cart'))
+                           final_total=final_total,
+                           reasons=reasons)
 
 
 @app.route('/checkout', methods=['POST'])
@@ -228,78 +228,118 @@ def checkout():
         flash('Cart is empty.', 'warning')
         return redirect(url_for('view_cart'))
 
-    today_str = datetime.date.today().strftime('%d/%m/%Y')
+    cart_items = list(cart.values())
+    subtotal, discount_pct, discount_amount, final_total, reasons = calculate_discounts(cart_items)
 
-    subtotal, discount_pct, discount_amount, final_total, reasons = calculate_discounts(cart)
-
+    # Verify stock again
     for code, item in cart.items():
-        product = inventory.get(code)
-        if not product or not product['active'] or product['quantity'] < item['quantity']:
+        product = Product.query.get(item['product_id'])
+        if not product or not product.active or product.quantity < item['quantity']:
             flash(f'Stock changed for {item["name"]}. Please update your cart.', 'danger')
             return redirect(url_for('view_cart'))
 
-        product['quantity'] -= item['quantity']
+    invoice_no = generate_invoice_no()
+    payment_method = request.form.get('payment_method', 'cash')
+    sale = Sale(
+        invoice_no=invoice_no,
+        user_id=1,
+        total_amount=subtotal,
+        discount_pct=discount_pct,
+        discount_amount=discount_amount,
+        final_total=final_total,
+        payment_method=payment_method
+    )
+    db.session.add(sale)
+    db.session.flush()
 
-        line_subtotal = item['price'] * item['quantity']
-        line_discount = line_subtotal * (discount_pct / 100)
-        line_final = line_subtotal - line_discount
+    for code, item in cart.items():
+        product = Product.query.get(item['product_id'])
+        product.quantity -= item['quantity']
+        line_total = item['price'] * item['quantity'] * (1 - discount_pct / 100)
+        sale_item = SaleItem(
+            sale_id=sale.id,
+            product_id=product.id,
+            quantity=item['quantity'],
+            price=item['price'],
+            line_total=line_total
+        )
+        db.session.add(sale_item)
 
-        sale_entry = {
-            "date": today_str,
-            "code": code,
-            "name": item['name'],
-            "quantity_sold": item['quantity'],
-            "price": item['price'],
-            "discount_applied": discount_pct,
-            "line_total": line_final
-        }
-        sales_history.append(sale_entry)
-
+    db.session.commit()
     session.pop('cart', None)
-    session.pop('loyalty', None)
-    flash(f'Checkout successful! Total: ${final_total:.2f}', 'success')
+    flash(f'Checkout successful! Invoice: {invoice_no}, Total: KES {final_total:.2f}', 'success')
     return redirect(url_for('index'))
 
 
 @app.route('/clear_cart', methods=['POST'])
-def clear_cart_route():
+def clear_cart():
     session.pop('cart', None)
     flash('Cart cleared.', 'info')
     return redirect(url_for('view_cart'))
 
+@app.route('/sales_report')
+def sales_report():
+    today = datetime.utcnow().date()
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    if start_date and end_date:
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+        except ValueError:
+            start = datetime(today.year, today.month, today.day)
+            end = start + timedelta(days=1)
+    else:
+        start = datetime(today.year, today.month, today.day)
+        end = start + timedelta(days=1)
 
-@app.route('/report')
-def daily_report():
-    today_str = datetime.date.today().strftime('%d/%m/%Y')
+    sales = Sale.query.filter(Sale.sale_date >= start, Sale.sale_date < end).all()
+    total_revenue = sum(s.final_total for s in sales)
 
-    total_inventory_value = 0.0
-    active_items = []
-    for code, details in inventory.items():
-        if details['active']:
-            total_inventory_value += details['price'] * details['quantity']
-            active_items.append((code, details))
+    total_items_sold = db.session.query(db.func.sum(SaleItem.quantity)).\
+        join(Sale, Sale.id == SaleItem.sale_id).\
+        filter(Sale.sale_date >= start, Sale.sale_date < end).scalar() or 0
 
-    today_sales = [sale for sale in sales_history if sale['date'] == today_str]
-    total_revenue = sum(s['line_total'] for s in today_sales)   # use line_total (discounted)
-    total_items_sold = sum(s['quantity_sold'] for s in today_sales)
+    top_products = db.session.query(
+        Product.name, db.func.sum(SaleItem.quantity).label('total_qty')
+    ).join(SaleItem, SaleItem.product_id == Product.id) \
+        .join(Sale, Sale.id == SaleItem.sale_id) \
+        .filter(Sale.sale_date >= start, Sale.sale_date < end) \
+        .group_by(Product.id).order_by(db.func.sum(SaleItem.quantity).desc()).limit(5).all()
 
-    freq = {}
-    for sale in today_sales:
-        freq[sale['name']] = freq.get(sale['name'], 0) + sale['quantity_sold']
-    top_product = max(freq.items(), key=lambda x: x[1]) if freq else None
-
-    sorted_active = sorted(active_items, key=lambda x: x[1]['quantity'])
-    low_stock_alert = sorted_active[:3]
-
-    return render_template('report.html',
-                           active_count=len(active_items),
-                           total_inventory_value=total_inventory_value,
+    return render_template('sales_report.html',
+                           sales=sales,
                            total_revenue=total_revenue,
                            total_items_sold=total_items_sold,
-                           top_product=top_product,
-                           low_stock_alert=low_stock_alert,
-                           date=today_str)
+                           top_products=top_products,
+                           start_date=start.strftime('%Y-%m-%d'),
+                           end_date=(end - timedelta(days=1)).strftime('%Y-%m-%d'))
 
+
+with app.app_context():
+    db.create_all()
+
+    if not User.query.filter_by(username='admin').first():
+        admin = User(
+            username='admin',
+            password=generate_password_hash('admin123'),
+            role='admin',
+            loyalty=False
+        )
+        db.session.add(admin)
+        db.session.commit()
+
+    if Product.query.count() == 0:
+        sample_products = [
+            Product(code='RICE-001', name='Premium Rice (5kg)', price=450.0, category='Food', quantity=50, active=True),
+            Product(code='SUGAR-01', name='White Sugar (2kg)', price=220.0, category='Food', quantity=30, active=True),
+            Product(code='OIL-001', name='Cooking Oil (1L)', price=350.0, category='Food', quantity=20, active=True),
+            Product(code='SODA-01', name='Soda Pack', price=120.0, category='Beverages', quantity=100, active=True),
+            Product(code='WATER-01', name='Mineral Water', price=50.0, category='Beverages', quantity=80, active=True),
+        ]
+        db.session.add_all(sample_products)
+        db.session.commit()
+        print("Added 5 sample products to the database!")
 
 if __name__ == '__main__':
     app.run(debug=True)
