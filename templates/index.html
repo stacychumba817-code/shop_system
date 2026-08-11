@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Point of Sale</h2>
+<form class="d-flex mb-3" method="get">
+    <input class="form-control me-2" type="search" name="q" placeholder="Search by code, name, category..." value="{{ search_query }}">
+    <button class="btn btn-outline-primary" type="submit">Search</button>
+    {% if not search_query %}
+        <a href="?q=low" class="btn btn-outline-danger ms-2">Low Stock</a>
+    {% endif %}
+</form>
+
+<div class="row row-cols-1 row-cols-md-3 g-4">
+    {% for product in products %}
+        <div class="col">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">{{ product.name }}</h5>
+                    <p class="card-text">
+                        Code: <strong>{{ product.code }}</strong><br>
+                        Price: KES {{ "%.2f"|format(product.price) }}<br>
+                        Stock: {{ product.quantity }}
+                    </p>
+                    <form method="post" action="{{ url_for('add_to_cart') }}" class="d-flex gap-2">
+                        <input type="hidden" name="code" value="{{ product.code }}">
+                        <input type="number" name="quantity" value="1" min="1" max="{{ product.quantity }}" class="form-control form-control-sm" style="width:70px">
+                        <button type="submit" class="btn btn-success btn-sm">Add</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    {% endfor %}
+</div>
+{% if low_stock %}
+    <hr>
+    <h5 class="text-danger">⚠️ Low Stock Alert</h5>
+    <ul>
+        {% for p in low_stock %}
+            <li>{{ p.name }} ({{ p.code }}) – {{ p.quantity }} left</li>
+        {% endfor %}
+    </ul>
+{% endif %}
+{% endblock %}

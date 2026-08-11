@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Dashboard</h2>
+<div class="row g-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body"><h5>Today's Sales</h5><h2>KES {{ "%.2f"|format(total_sales_today) }}</h2></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body"><h5>Items Sold Today</h5><h2>{{ items_sold_today }}</h2></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning">
+            <div class="card-body"><h5>Low Stock Items</h5><h2>{{ low_stock_count }}</h2></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info">
+            <div class="card-body"><h5>Active Products</h5><h2>{{ total_products }}</h2></div>
+        </div>
+    </div>
+</div>
+<hr>
+<div class="row">
+    <div class="col-md-8">
+        <canvas id="salesChart" width="400" height="200"></canvas>
+    </div>
+</div>
+<script>
+    const ctx = document.getElementById('salesChart').getContext('2d');
+    const data = {{ sales_7_days | tojson }};
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.map(d => d.date),
+            datasets: [{
+                label: 'Sales (KES)',
+                data: data.map(d => d.total),
+                borderColor: 'blue',
+                fill: false
+            }]
+        },
+        options: { responsive: true }
+    });
+</script>
+{% endblock %}
